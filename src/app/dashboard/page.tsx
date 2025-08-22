@@ -1,99 +1,233 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Star, Target, MessageCircle, Plus, Send, User, LogOut } from 'lucide-react'
+import { useUser } from '@/contexts/UserContext'
+import { supabase } from '@/lib/supabase'
+import { useRouter } from 'next/navigation'
 
 interface OKR {
   id: string
   objective: string
-  keyResults: string[]
-  createdAt: string
+  key_results: string[]
+  user_id: string
+  created_at: string
 }
 
 interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
-  timestamp: string
+  created_at: string
 }
 
 export default function DashboardPage() {
+  const { user, loading: userLoading, signOut } = useUser()
+  const router = useRouter()
+
   const [okr, setOkr] = useState<OKR | null>(null)
   const [showOkrForm, setShowOkrForm] = useState(false)
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      id: '1',
-      role: 'assistant',
-      content: '你好！我是你的AI学习助手。你可以向我提问学习相关的问题，或者询问"今天我该做什么？"来获取基于你的OKR的学习建议。',
-      timestamp: new Date().toISOString()
-    }
-  ])
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [currentMessage, setCurrentMessage] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
+  const [isLoadingAI, setIsLoadingAI] = useState(false)
+  const [okrLoading, setOkrLoading] = useState(true)
+  const [chatLoading, setChatLoading] = useState(true)
 
-  // 模拟用户数据
-  const user = {
-    name: '张三',
-    email: 'zhangsan@example.com'
-  }
-
-  const handleCreateOkr = (objective: string, keyResults: string[]) => {
-    const newOkr: OKR = {
-      id: Date.now().toString(),
-      objective,
-      keyResults,
-      createdAt: new Date().toISOString()
+  // Redirect if not logged in
+  useEffect(() => {
+    if (!userLoading && !user) {
+      router.push('/auth/login')
     }
-    setOkr(newOkr)
-    setShowOkrForm(false)
+  }, [user, userLoading, router])
+
+  // Fetch OKR
+  const fetchOkr = useCallback(async () => {
+    if (!user) return
+    setOkrLoading(true)
+    const { data, error } = await supabase
+      .from('okrs')
+      .select('*')
+      .eq('user_id', user.id)
+      .single()
+
+    if (error && error.code !== 'PGRST116') { // PGRST116 means no rows found
+      console.error('Error fetching OKR:', error)
+    } else if (data) {
+      setOkr(data)
+    } else {
+      setOkr(null)
+    }
+    setOkrLoading(false)
+  }, [user])
+
+  // Fetch Chat History
+  const fetchChatHistory = useCallback(async () => {
+    if (!user) return
+    setChatLoading(true)
+    const { data, error } = await supabase
+      .from('chat_history')
+      .select('id, message, created_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true })
+
+    if (error) {
+      console.error('Error fetching chat history:', error)
+    } else if (data) {
+      const formattedMessages: ChatMessage[] = data.map(item => ({
+        id: item.id.toString(),
+        role: item.message.role,
+        content: item.message.content,
+        created_at: item.created_at
+      }))
+      setChatMessages(formattedMessages)
+    }
+    setChatLoading(false)
+  }, [user])
+
+  useEffect(() => {
+    if (user) {
+      fetchOkr()
+      fetchChatHistory()
+    }
+  }, [user, fetchOkr, fetchChatHistory])
+
+  const handleCreateOrUpdateOkr = async (objective: string, keyResults: string[]) => {
+    if (!user) return
+
+    const newOkrData = {
+      objective,
+      key_results: keyResults,
+      user_id: user.id,
+    }
+
+    let error = null
+    if (okr) {
+      // Update existing OKR
+      const { data: updateData, error: updateError } = await supabase
+        .from('okrs')
+        .update(newOkrData)
+        .eq('id', okr.id)
+        .select() // Select the updated row
+        .single() // Expect a single row
+      error = updateError
+      if (!error) console.log('OKR updated successfully. Data:', updateData)
+    } else {
+      // Create new OKR
+      const { data: insertData, error: insertError } = await supabase
+        .from('okrs')
+        .insert([newOkrData])
+        .select() // Select the inserted row
+        .single() // Expect a single row
+      error = insertError
+      if (!error) console.log('OKR inserted successfully. Data:', insertData)
+    }
+
+    if (error) {
+      console.error('Error saving OKR:', error, JSON.stringify(error, null, 2))
+      alert('保存OKR失败，请重试。错误信息：' + error.message)
+    } else {
+      console.log('OKR saved successfully. Re-fetching OKR...')
+      await fetchOkr() // Re-fetch to get the latest data and ID
+      setShowOkrForm(false)
+      console.log('OKR form closed.')
+      // Add a system message to chat history
+      const systemMessageContent = `你已成功${okr ? '更新' : '创建'}了新的学习目标！\n\n目标：${objective}\n\n关键结果：\n${keyResults.map((kr, i) => `${i+1}. ${kr}`).join('\\n')}\n\n你可以问我"今天要做什么"，我会根据你的目标推荐任务。`
+      const systemMessage: ChatMessage = {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: systemMessageContent,
+        created_at: new Date().toISOString()
+      }
+      setChatMessages(prev => [...prev, systemMessage])
+      console.log('Adding system message to chat history in DB...')
+      await supabase.from('chat_history').insert([{ user_id: user.id, message: { role: 'assistant', content: systemMessageContent } }])
+      console.log('System message added to DB.')
+    }
   }
 
   const handleSendMessage = async () => {
-    if (!currentMessage.trim()) return
+    if (!currentMessage.trim() || !user) return
 
-    const userMessage: ChatMessage = {
+    const userMessageContent = currentMessage
+    const newUserMessage: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
-      content: currentMessage,
-      timestamp: new Date().toISOString()
+      content: userMessageContent,
+      created_at: new Date().toISOString()
     }
 
-    setChatMessages(prev => [...prev, userMessage])
+    setChatMessages(prev => [...prev, newUserMessage])
     setCurrentMessage('')
-    setIsLoading(true)
+    setIsLoadingAI(true)
+    console.log('User message sent:', userMessageContent)
 
-    // 模拟AI回复
-    setTimeout(() => {
-      const aiResponse: ChatMessage = {
+    // Save user message to DB
+    console.log('Saving user message to DB...')
+    await supabase.from('chat_history').insert([{ user_id: user.id, message: { role: 'user', content: userMessageContent } }])
+    console.log('User message saved to DB.')
+
+    try {
+      console.log('Sending request to /api/chat...')
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: userMessageContent,
+          okr: okr ? { objective: okr.objective, keyResults: okr.key_results } : null,
+        }),
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`HTTP error! status: ${response.status}, response: ${errorText}`)
+        throw new Error(`HTTP error! status: ${response.status}, details: ${errorText}`)
+      }
+
+      const data = await response.json()
+      console.log('Received response from /api/chat:', data)
+      const aiResponseContent = data.response || '抱歉，我暂时无法回答这个问题。'
+
+      const newAiMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: getAIResponse(currentMessage, okr),
-        timestamp: new Date().toISOString()
+        content: aiResponseContent,
+        created_at: new Date().toISOString()
       }
-      setChatMessages(prev => [...prev, aiResponse])
-      setIsLoading(false)
-    }, 1000)
+      setChatMessages(prev => [...prev, newAiMessage])
+      // Save AI message to DB
+      console.log('Saving AI message to DB...')
+      await supabase.from('chat_history').insert([{ user_id: user.id, message: { role: 'assistant', content: aiResponseContent } }])
+      console.log('AI message saved to DB.')
+
+    } catch (error: any) {
+      console.error('Error sending message to AI:', error)
+      const errorMessageContent = `抱歉，AI助手出现问题，请稍后再试。错误详情：${error.message || '未知错误'}`
+      const errorMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: errorMessageContent,
+        created_at: new Date().toISOString()
+      }
+      setChatMessages(prev => [...prev, errorMessage])
+      await supabase.from('chat_history').insert([{ user_id: user.id, message: { role: 'assistant', content: errorMessageContent } }])
+    } finally {
+      setIsLoadingAI(false)
+      console.log('AI loading state set to false.')
+    }
   }
 
-  const getAIResponse = (message: string, okr: OKR | null): string => {
-    if (message.includes('今天') && message.includes('做什么')) {
-      if (okr) {
-        return `基于你的目标"${okr.objective}"，我建议你今天可以：\n\n1. 复习相关的理论知识\n2. 完成一个小的实践项目\n3. 整理学习笔记\n\n这些任务将帮助你朝着关键结果迈进。有什么具体问题需要我帮助吗？`
-      } else {
-        return '你还没有设置学习目标(OKR)。建议你先创建一个目标，这样我就能为你提供更个性化的学习建议了！'
-      }
-    }
-    
-    if (message.includes('B+树') || message.includes('数据结构')) {
-      return 'B+树是一种多路搜索树，常用于数据库和文件系统中。它的特点包括：\n\n1. 所有叶子节点都在同一层\n2. 非叶子节点只存储键值，不存储数据\n3. 叶子节点存储所有数据，并且通过指针连接\n4. 支持范围查询和顺序访问\n\n相比B树，B+树的优势是更适合磁盘存储和范围查询。你想了解更多关于B+树的哪个方面？'
-    }
-
-    return '这是一个很好的问题！作为你的AI学习助手，我会尽力帮助你。不过目前我的知识库还在完善中，建议你可以：\n\n1. 查阅相关教材\n2. 向老师或同学请教\n3. 在线搜索相关资料\n\n有其他学习相关的问题吗？'
+  const handleLogout = async () => {
+    await signOut()
   }
 
-  const handleLogout = () => {
-    // TODO: 实现登出逻辑
-    window.location.href = '/'
+  if (userLoading || okrLoading || chatLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <p className="text-lg text-gray-700">加载中...</p>
+      </div>
+    )
   }
 
   return (
@@ -107,10 +241,12 @@ export default function DashboardPage() {
               <h1 className="text-xl font-bold text-gray-900">启明星</h1>
             </div>
             <div className="flex items-center space-x-4">
-              <div className="flex items-center text-sm text-gray-600">
-                <User className="h-4 w-4 mr-1" />
-                {user.name}
-              </div>
+              {user && (
+                <div className="flex items-center text-sm text-gray-600">
+                  <User className="h-4 w-4 mr-1" />
+                  {user.name || user.email}
+                </div>
+              )}
               <button
                 onClick={handleLogout}
                 className="text-gray-400 hover:text-gray-600"
@@ -126,32 +262,30 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[calc(100vh-120px)]">
           {/* Left Panel - OKR */}
           <div className="lg:col-span-1 space-y-6">
-            <div className="bg-white rounded-lg shadow p-6">
+            <div className="bg-white rounded-lg shadow p-6 h-full flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold text-gray-900 flex items-center">
                   <Target className="h-5 w-5 mr-2 text-blue-600" />
                   我的学习目标
                 </h2>
-                {!okr && (
-                  <button
-                    onClick={() => setShowOkrForm(true)}
-                    className="text-blue-600 hover:text-blue-700"
-                  >
-                    <Plus className="h-5 w-5" />
-                  </button>
-                )}
+                <button
+                  onClick={() => setShowOkrForm(true)}
+                  className="text-blue-600 hover:text-blue-700"
+                >
+                  <Plus className="h-5 w-5" />
+                </button>
               </div>
               
               {okr ? (
-                <div className="space-y-4">
+                <div className="space-y-4 flex-1">
                   <div>
                     <h3 className="font-medium text-gray-900 mb-2">目标 (Objective)</h3>
-                    <p className="text-gray-700 bg-blue-50 p-3 rounded">{okr.objective}</p>
+                    <p className="text-gray-700 bg-blue-50 p-3 rounded whitespace-pre-wrap">{okr.objective}</p>
                   </div>
                   <div>
                     <h3 className="font-medium text-gray-900 mb-2">关键结果 (Key Results)</h3>
                     <ul className="space-y-2">
-                      {okr.keyResults.map((kr, index) => (
+                      {okr.key_results.map((kr, index) => (
                         <li key={index} className="text-gray-700 bg-gray-50 p-2 rounded flex items-start">
                           <span className="text-blue-600 mr-2">{index + 1}.</span>
                           {kr}
@@ -159,15 +293,9 @@ export default function DashboardPage() {
                       ))}
                     </ul>
                   </div>
-                  <button
-                    onClick={() => setShowOkrForm(true)}
-                    className="text-sm text-blue-600 hover:text-blue-700"
-                  >
-                    编辑目标
-                  </button>
                 </div>
               ) : (
-                <div className="text-center py-8">
+                <div className="text-center py-8 flex-1 flex flex-col justify-center items-center">
                   <Target className="h-12 w-12 text-gray-300 mx-auto mb-4" />
                   <p className="text-gray-500 mb-4">还没有设置学习目标</p>
                   <button
@@ -208,7 +336,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ))}
-                {isLoading && (
+                {isLoadingAI && (
                   <div className="flex justify-start">
                     <div className="bg-gray-100 text-gray-900 px-4 py-2 rounded-lg">
                       <p>正在思考中...</p>
@@ -229,7 +357,7 @@ export default function DashboardPage() {
                   />
                   <button
                     onClick={handleSendMessage}
-                    disabled={!currentMessage.trim() || isLoading}
+                    disabled={!currentMessage.trim() || isLoadingAI}
                     className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white px-4 py-2 rounded-md"
                   >
                     <Send className="h-4 w-4" />
@@ -245,7 +373,7 @@ export default function DashboardPage() {
       {showOkrForm && (
         <OkrFormModal
           existingOkr={okr}
-          onSave={handleCreateOkr}
+          onSave={handleCreateOrUpdateOkr}
           onClose={() => setShowOkrForm(false)}
         />
       )}
@@ -260,17 +388,28 @@ function OkrFormModal({
   onClose 
 }: { 
   existingOkr: OKR | null
-  onSave: (objective: string, keyResults: string[]) => void
+  onSave: (objective: string, keyResults: string[]) => Promise<void>
   onClose: () => void 
 }) {
   const [objective, setObjective] = useState(existingOkr?.objective || '')
-  const [keyResults, setKeyResults] = useState(existingOkr?.keyResults || ['', '', ''])
+  const [keyResults, setKeyResults] = useState(existingOkr?.key_results || ['', '', ''])
+  const [isSaving, setIsSaving] = useState(false)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const filteredKRs = keyResults.filter(kr => kr.trim() !== '')
     if (objective.trim() && filteredKRs.length > 0) {
-      onSave(objective.trim(), filteredKRs)
+      try {
+        setIsSaving(true)
+        await onSave(objective.trim(), filteredKRs)
+      } catch (err: any) {
+        console.error('保存OKR时发生异常:', err)
+        alert('保存失败：' + (err?.message || '未知错误'))
+      } finally {
+        setIsSaving(false)
+      }
+    } else {
+      alert('目标和至少一个关键结果不能为空。')
     }
   }
 
@@ -321,9 +460,10 @@ function OkrFormModal({
           <div className="flex space-x-3 pt-4">
             <button
               type="submit"
-              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md"
+              disabled={isSaving}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white py-2 px-4 rounded-md"
             >
-              保存
+              {isSaving ? '保存中...' : '保存'}
             </button>
             <button
               type="button"

@@ -1,8 +1,10 @@
 'use client'
 
-import { useState } from 'react'
-import { Star, Mail, Lock, Eye, EyeOff, User } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Star, Mail, Lock, User, Eye, EyeOff } from 'lucide-react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { useUser } from '@/contexts/UserContext'
 
 export default function RegisterPage() {
   const [formData, setFormData] = useState({
@@ -14,20 +16,35 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState('')
+  const { user, signUp, loading: userLoading } = useUser()
+  const router = useRouter()
+
+  useEffect(() => {
+    if (!userLoading && user) {
+      router.push('/dashboard')
+    }
+  }, [user, userLoading, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setError('')
+    
+    if (formData.password !== formData.confirmPassword) {
+      setError('两次输入的密码不一致')
+      return
+    }
+    
     setIsLoading(true)
     
-    // TODO: 实现注册逻辑
-    console.log('注册:', formData)
+    const { error } = await signUp(formData.email, formData.password, formData.name)
     
-    // 模拟API调用
-    setTimeout(() => {
-      setIsLoading(false)
-      // 注册成功后跳转到主页面
-      window.location.href = '/dashboard'
-    }, 1000)
+    if (error) {
+      setError(error.message || '注册失败，请重试')
+    } else {
+      router.push('/auth/login?registered=true')
+    }
+    setIsLoading(false)
   }
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -35,6 +52,14 @@ export default function RegisterPage() {
       ...formData,
       [e.target.name]: e.target.value
     })
+  }
+
+  if (userLoading || user) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <p className="text-lg text-gray-700">加载中...</p>
+      </div>
+    )
   }
 
   return (
@@ -56,6 +81,12 @@ export default function RegisterPage() {
         </div>
         
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+          {error && (
+            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+              <span className="block sm:inline">{error}</span>
+            </div>
+          )}
+          
           <div className="space-y-4">
             <div>
               <label htmlFor="name" className="block text-sm font-medium text-gray-700">

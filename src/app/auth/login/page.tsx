@@ -1,28 +1,47 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Star, Mail, Lock, Eye, EyeOff } from 'lucide-react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import { useUser } from '@/contexts/UserContext'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState('')
+  const { user, signIn, loading: userLoading } = useUser()
+  const router = useRouter()
+
+  useEffect(() => {
+    if (!userLoading && user) {
+      router.push('/dashboard')
+    }
+  }, [user, userLoading, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
-    
-    // TODO: 实现登录逻辑
-    console.log('登录:', { email, password })
-    
-    // 模拟API调用
-    setTimeout(() => {
-      setIsLoading(false)
-      // 登录成功后跳转到主页面
-      window.location.href = '/dashboard'
-    }, 1000)
+    setError('')
+
+    const { error } = await signIn(email, password)
+
+    if (error) {
+      setError(error.message || '登录失败，请检查邮箱和密码')
+    } else {
+      // 登录成功后，UserContext会自动重定向
+    }
+    setIsLoading(false)
+  }
+
+  if (userLoading || user) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <p className="text-lg text-gray-700">加载中...</p>
+      </div>
+    )
   }
 
   return (
@@ -44,6 +63,11 @@ export default function LoginPage() {
         </div>
         
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+          {error && (
+            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+              <span className="block sm:inline">{error}</span>
+            </div>
+          )}
           <div className="space-y-4">
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-gray-700">
