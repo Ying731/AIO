@@ -5,15 +5,6 @@ export async function POST(req: Request) {
   try {
     console.log('Chat API called')
     
-    // 检查API Key
-    const apiKey = process.env.GOOGLE_AI_API_KEY
-    console.log('API Key exists:', !!apiKey)
-    
-    if (!apiKey) {
-      console.error('GOOGLE_AI_API_KEY not found')
-      return NextResponse.json({ error: 'API Key not configured' }, { status: 500 })
-    }
-
     const { message, okr } = await req.json()
     console.log('Received message:', message)
 
@@ -21,37 +12,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Message is required' }, { status: 400 })
     }
 
-    let prompt = ''
+    // 检查API Key
+    const apiKey = process.env.GOOGLE_AI_API_KEY
+    
+    if (!apiKey) {
+      console.error('GOOGLE_AI_API_KEY not found')
+      return NextResponse.json({ 
+        response: getFallbackResponse(message, okr)
+      })
+    }
+
     let aiResponse = ''
 
     // 检查是否是询问每日任务
     if (message.includes('今天') && (message.includes('做什么') || message.includes('任务'))) {
       if (okr && okr.objective && okr.keyResults && okr.keyResults.length > 0) {
-        const krList = okr.keyResults.map((kr: string, index: number) => `${index + 1}. ${kr}`).join('\n')
-        
-        // 提供基于OKR的智能建议
-        aiResponse = `根据你的学习目标，我为你推荐今日学习任务：
-
-📚 **目标：${okr.objective}**
-
-🎯 **今日推荐任务：**
-
-${okr.keyResults.map((kr: string, index: number) => {
-  // 根据关键结果生成具体任务
-  const taskSuggestions = [
-    `• 针对"${kr}"，建议今天完成相关理论学习30分钟`,
-    `• 完成与"${kr}"相关的练习题或实践项目`,
-    `• 复习和总结"${kr}"的核心知识点`
-  ]
-  return `**${index + 1}. ${kr}**\n${taskSuggestions[index % taskSuggestions.length]}`
-}).join('\n\n')}
-
-💡 **学习建议：**
-- 建议采用番茄工作法，每25分钟专注学习，休息5分钟
-- 记录学习进度和遇到的问题
-- 可以随时向我提问具体的学习疑问
-
-加油！每天的小进步都会积累成大成就！ 🌟`
+        aiResponse = generateTaskRecommendations(okr)
       } else {
         aiResponse = `你还没有设置学习目标(OKR)。建议你先创建一个目标，这样我就能为你提供更个性化的学习建议了！
 
@@ -64,61 +40,65 @@ ${okr.keyResults.map((kr: string, index: number) => {
 设置好目标后，再问我"今天要做什么"，我会给你具体的学习计划！`
       }
     } else {
-      // 尝试使用Google AI，如果失败则提供智能备用响应
-      prompt = `你是一个专业的AI学习助手，请回答用户的问题。如果用户询问学习相关的问题，请提供有用的建议和指导。
+      // 尝试使用Google AI
+      try {
+        const genAI = new GoogleGenerativeAI(apiKey)
+        const model = genAI.getGenerativeModel({ model: 'gemini-pro' })
+        
+        const prompt = `你是一个专业的AI学习助手，请回答用户的问题。如果用户询问学习相关的问题，请提供有用的建议和指导。
 
 用户问题：${message}
 
 请用中文回答：`
-
-      try {
-        console.log('Initializing Google AI...')
-        const genAI = new GoogleGenerativeAI(apiKey)
         
-        console.log('Getting model...')
-        const model = genAI.getGenerativeModel({ 
-          model: 'gemini-pro',
-          generationConfig: {
-            temperature: 0.7,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 1024,
-          }
-        })
-        
-        console.log('Generating content...')
         const result = await model.generateContent(prompt)
-        
-        console.log('Getting response...')
         const response = await result.response
-        
-        console.log('Extracting text...')
         aiResponse = response.text()
         
         console.log('AI response received successfully')
       } catch (aiError: any) {
         console.error('Google AI Error:', aiError)
-        console.error('Error message:', aiError.message)
-        
-        // 提供智能备用响应
-        aiResponse = generateFallbackResponse(message)
+        aiResponse = getFallbackResponse(message, okr)
       }
     }
 
-    console.log('Sending response:', aiResponse.substring(0, 100) + '...')
     return NextResponse.json({ response: aiResponse })
 
   } catch (error: any) {
     console.error('General Error:', error)
     return NextResponse.json({ 
-      error: 'Internal Server Error', 
-      details: error.message 
-    }, { status: 500 })
+      response: getFallbackResponse('', null)
+    })
   }
 }
 
-// 智能备用响应函数
-function generateFallbackResponse(message: string): string {
+function generateTaskRecommendations(okr: any): string {
+  const krList = okr.keyResults.map((kr: string, index: number) => `${index + 1}. ${kr}`).join('\n')
+  
+  return `根据你的学习目标，我为你推荐今日学习任务：
+
+📚 **目标：${okr.objective}**
+
+🎯 **今日推荐任务：**
+
+${okr.keyResults.map((kr: string, index: number) => {
+    const taskSuggestions = [
+      `• 针对"${kr}"，建议今天完成相关理论学习30分钟`,
+      `• 完成与"${kr}"相关的练习题或实践项目`,
+      `• 复习和总结"${kr}"的核心知识点`
+    ]
+    return `**${index + 1}. ${kr}**\n${taskSuggestions[index % taskSuggestions.length]}`
+  }).join('\n\n')}
+
+💡 **学习建议：**
+- 建议采用番茄工作法，每25分钟专注学习，休息5分钟
+- 记录学习进度和遇到的问题
+- 可以随时向我提问具体的学习疑问
+
+加油！每天的小进步都会积累成大成就！ 🌟`
+}
+
+function getFallbackResponse(message: string, okr: any): string {
   const lowerMessage = message.toLowerCase()
   
   // 学习方法相关
@@ -191,15 +171,15 @@ function generateFallbackResponse(message: string): string {
   }
   
   // 默认响应
-  return `你好！我是你的AI学习助手。虽然当前网络连接有些问题，但我仍然可以为你提供学习建议！
+  return `你好！我是你的AI学习助手 🌟
 
-🌟 **我可以帮助你：**
+💬 **我可以帮助你：**
 - 制定学习计划和目标
 - 提供学习方法和技巧
 - 解答学习中的疑问
 - 推荐学习资源
 
-💬 **你可以问我：**
+🎯 **你可以问我：**
 - "如何提高学习效率？"
 - "编程应该怎么学？"
 - "如何准备考试？"
