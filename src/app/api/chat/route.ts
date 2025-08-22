@@ -43,7 +43,7 @@ export async function POST(req: Request) {
       // 尝试使用Google AI
       try {
         const genAI = new GoogleGenerativeAI(apiKey)
-        const model = genAI.getGenerativeModel({ model: 'gemini-pro' })
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
         
         const prompt = `你是一个专业的AI学习助手，请回答用户的问题。如果用户询问学习相关的问题，请提供有用的建议和指导。
 

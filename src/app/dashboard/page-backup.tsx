@@ -1,25 +1,17 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Star, Target, MessageCircle, Plus, Send, User, LogOut, Trash2, Edit, CheckCircle, Circle, BarChart3 } from 'lucide-react'
+import { Star, Target, MessageCircle, Plus, Send, User, LogOut } from 'lucide-react'
 import { useUser } from '@/contexts/SafeUserContext'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 
-interface KeyResult {
-  id: string
-  text: string
-  completed: boolean
-  progress: number // 0-100
-}
-
 interface OKR {
   id: string
   objective: string
-  key_results: KeyResult[]
+  key_results: string[]
   user_id: string
   created_at: string
-  overall_progress: number // 0-100
 }
 
 interface ChatMessage {
@@ -29,7 +21,7 @@ interface ChatMessage {
   created_at: string
 }
 
-export default function EnhancedDashboardPage() {
+export default function DashboardPage() {
   const { user, loading: userLoading, signOut } = useUser()
   const router = useRouter()
 
@@ -48,7 +40,7 @@ export default function EnhancedDashboardPage() {
     }
   }, [user, userLoading, router])
 
-  // Fetch OKR with enhanced structure
+  // Fetch OKR
   const fetchOkr = useCallback(async () => {
     if (!user) return
     setOkrLoading(true)
@@ -58,23 +50,10 @@ export default function EnhancedDashboardPage() {
       .eq('user_id', user.id)
       .single()
 
-    if (error && error.code !== 'PGRST116') {
+    if (error && error.code !== 'PGRST116') { // PGRST116 means no rows found
       console.error('Error fetching OKR:', error)
     } else if (data) {
-      // Convert old format to new format if needed
-      const enhancedOkr: OKR = {
-        ...data,
-        key_results: Array.isArray(data.key_results) && typeof data.key_results[0] === 'string'
-          ? data.key_results.map((kr: string, index: number) => ({
-              id: `kr_${index}`,
-              text: kr,
-              completed: false,
-              progress: 0
-            }))
-          : data.key_results || [],
-        overall_progress: data.overall_progress || 0
-      }
-      setOkr(enhancedOkr)
+      setOkr(data)
     } else {
       setOkr(null)
     }
@@ -112,85 +91,14 @@ export default function EnhancedDashboardPage() {
     }
   }, [user, fetchOkr, fetchChatHistory])
 
-  // Calculate overall progress
-  const calculateOverallProgress = (keyResults: KeyResult[]): number => {
-    if (keyResults.length === 0) return 0
-    const totalProgress = keyResults.reduce((sum, kr) => sum + kr.progress, 0)
-    return Math.round(totalProgress / keyResults.length)
-  }
-
-  // Update key result progress
-  const updateKeyResultProgress = async (krId: string, progress: number, completed: boolean) => {
-    if (!okr || !user) return
-
-    const updatedKeyResults = okr.key_results.map(kr =>
-      kr.id === krId ? { ...kr, progress, completed } : kr
-    )
-
-    const overallProgress = calculateOverallProgress(updatedKeyResults)
-
-    const updatedOkr = {
-      ...okr,
-      key_results: updatedKeyResults,
-      overall_progress: overallProgress
-    }
-
-    try {
-      const { error } = await supabase
-        .from('okrs')
-        .update({
-          key_results: updatedKeyResults,
-          overall_progress: overallProgress
-        })
-        .eq('id', okr.id)
-
-      if (error) throw error
-
-      setOkr(updatedOkr)
-    } catch (error) {
-      console.error('Error updating key result:', error)
-      alert('更新进度失败，请重试')
-    }
-  }
-
-  // Delete OKR
-  const deleteOkr = async () => {
-    if (!okr || !user) return
-
-    if (!confirm('确定要删除这个目标吗？此操作不可撤销。')) return
-
-    try {
-      const { error } = await supabase
-        .from('okrs')
-        .delete()
-        .eq('id', okr.id)
-
-      if (error) throw error
-
-      setOkr(null)
-      alert('目标已删除')
-    } catch (error) {
-      console.error('Error deleting OKR:', error)
-      alert('删除失败，请重试')
-    }
-  }
-
   const handleCreateOrUpdateOkr = async (objective: string, keyResults: string[]) => {
     if (!user) return
 
     try {
-      const enhancedKeyResults: KeyResult[] = keyResults.map((kr, index) => ({
-        id: `kr_${Date.now()}_${index}`,
-        text: kr,
-        completed: false,
-        progress: 0
-      }))
-
       const newOkrData = {
         objective,
-        key_results: enhancedKeyResults,
+        key_results: keyResults,
         user_id: user.id,
-        overall_progress: 0
       }
 
       let result
@@ -217,6 +125,7 @@ export default function EnhancedDashboardPage() {
 
       console.log('OKR saved successfully:', result.data)
       
+      // Re-fetch to get the latest data
       await fetchOkr()
       setShowOkrForm(false)
       
@@ -239,7 +148,7 @@ export default function EnhancedDashboardPage() {
     } catch (error: any) {
       console.error('Error saving OKR:', error)
       alert('保存OKR失败，请重试。错误信息：' + (error?.message || '未知错误'))
-      throw error
+      throw error // Re-throw to be caught by the form's error handler
     }
   }
 
@@ -257,11 +166,15 @@ export default function EnhancedDashboardPage() {
     setChatMessages(prev => [...prev, newUserMessage])
     setCurrentMessage('')
     setIsLoadingAI(true)
+    console.log('User message sent:', userMessageContent)
 
     // Save user message to DB
+    console.log('Saving user message to DB...')
     await supabase.from('chat_history').insert([{ user_id: user.id, message: { role: 'user', content: userMessageContent } }])
+    console.log('User message saved to DB.')
 
     try {
+      console.log('Sending request to /api/chat...')
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -269,20 +182,18 @@ export default function EnhancedDashboardPage() {
         },
         body: JSON.stringify({
           message: userMessageContent,
-          okr: okr ? { 
-            objective: okr.objective, 
-            keyResults: okr.key_results.map(kr => kr.text),
-            progress: okr.overall_progress 
-          } : null,
+          okr: okr ? { objective: okr.objective, keyResults: okr.key_results } : null,
         }),
       })
 
       if (!response.ok) {
         const errorText = await response.text()
+        console.error(`HTTP error! status: ${response.status}, response: ${errorText}`)
         throw new Error(`HTTP error! status: ${response.status}, details: ${errorText}`)
       }
 
       const data = await response.json()
+      console.log('Received response from /api/chat:', data)
       const aiResponseContent = data.response || '抱歉，我暂时无法回答这个问题。'
 
       const newAiMessage: ChatMessage = {
@@ -292,9 +203,10 @@ export default function EnhancedDashboardPage() {
         created_at: new Date().toISOString()
       }
       setChatMessages(prev => [...prev, newAiMessage])
-      
       // Save AI message to DB
+      console.log('Saving AI message to DB...')
       await supabase.from('chat_history').insert([{ user_id: user.id, message: { role: 'assistant', content: aiResponseContent } }])
+      console.log('AI message saved to DB.')
 
     } catch (error: any) {
       console.error('Error sending message to AI:', error)
@@ -309,6 +221,7 @@ export default function EnhancedDashboardPage() {
       await supabase.from('chat_history').insert([{ user_id: user.id, message: { role: 'assistant', content: errorMessageContent } }])
     } finally {
       setIsLoadingAI(false)
+      console.log('AI loading state set to false.')
     }
   }
 
@@ -354,7 +267,7 @@ export default function EnhancedDashboardPage() {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[calc(100vh-120px)]">
-          {/* Left Panel - Enhanced OKR */}
+          {/* Left Panel - OKR */}
           <div className="lg:col-span-1 space-y-6">
             <div className="bg-white rounded-lg shadow p-6 h-full flex flex-col">
               <div className="flex items-center justify-between mb-4">
@@ -362,101 +275,30 @@ export default function EnhancedDashboardPage() {
                   <Target className="h-5 w-5 mr-2 text-blue-600" />
                   我的学习目标
                 </h2>
-                <div className="flex space-x-2">
-                  <button
-                    onClick={() => setShowOkrForm(true)}
-                    className="text-blue-600 hover:text-blue-700"
-                    title={okr ? "编辑目标" : "创建目标"}
-                  >
-                    {okr ? <Edit className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
-                  </button>
-                  {okr && (
-                    <button
-                      onClick={deleteOkr}
-                      className="text-red-600 hover:text-red-700"
-                      title="删除目标"
-                    >
-                      <Trash2 className="h-5 w-5" />
-                    </button>
-                  )}
-                </div>
+                <button
+                  onClick={() => setShowOkrForm(true)}
+                  className="text-blue-600 hover:text-blue-700"
+                >
+                  <Plus className="h-5 w-5" />
+                </button>
               </div>
               
               {okr ? (
                 <div className="space-y-4 flex-1">
-                  {/* Overall Progress */}
-                  <div className="bg-blue-50 p-4 rounded-lg">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-blue-900">总体进度</span>
-                      <span className="text-sm font-bold text-blue-900">{okr.overall_progress}%</span>
-                    </div>
-                    <div className="w-full bg-blue-200 rounded-full h-2">
-                      <div 
-                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${okr.overall_progress}%` }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  {/* Objective */}
                   <div>
                     <h3 className="font-medium text-gray-900 mb-2">目标 (Objective)</h3>
                     <p className="text-gray-700 bg-blue-50 p-3 rounded whitespace-pre-wrap">{okr.objective}</p>
                   </div>
-
-                  {/* Key Results with Progress */}
                   <div>
                     <h3 className="font-medium text-gray-900 mb-2">关键结果 (Key Results)</h3>
-                    <div className="space-y-3">
+                    <ul className="space-y-2">
                       {okr.key_results.map((kr, index) => (
-                        <div key={kr.id} className="bg-gray-50 p-3 rounded">
-                          <div className="flex items-start justify-between mb-2">
-                            <span className="text-gray-700 flex-1">
-                              <span className="text-blue-600 mr-2">{index + 1}.</span>
-                              {kr.text}
-                            </span>
-                            <button
-                              onClick={() => updateKeyResultProgress(
-                                kr.id, 
-                                kr.completed ? 0 : 100, 
-                                !kr.completed
-                              )}
-                              className={`ml-2 ${kr.completed ? 'text-green-600' : 'text-gray-400'} hover:text-green-700`}
-                            >
-                              {kr.completed ? <CheckCircle className="h-5 w-5" /> : <Circle className="h-5 w-5" />}
-                            </button>
-                          </div>
-                          
-                          {/* Progress Bar */}
-                          <div className="flex items-center space-x-2">
-                            <div className="flex-1 bg-gray-200 rounded-full h-2">
-                              <div 
-                                className={`h-2 rounded-full transition-all duration-300 ${
-                                  kr.completed ? 'bg-green-500' : 'bg-blue-500'
-                                }`}
-                                style={{ width: `${kr.progress}%` }}
-                              ></div>
-                            </div>
-                            <span className="text-xs text-gray-500 w-10">{kr.progress}%</span>
-                          </div>
-                          
-                          {/* Progress Input */}
-                          <div className="mt-2">
-                            <input
-                              type="range"
-                              min="0"
-                              max="100"
-                              value={kr.progress}
-                              onChange={(e) => {
-                                const progress = parseInt(e.target.value)
-                                updateKeyResultProgress(kr.id, progress, progress === 100)
-                              }}
-                              className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
-                            />
-                          </div>
-                        </div>
+                        <li key={index} className="text-gray-700 bg-gray-50 p-2 rounded flex items-start">
+                          <span className="text-blue-600 mr-2">{index + 1}.</span>
+                          {kr}
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   </div>
                 </div>
               ) : (
@@ -481,12 +323,6 @@ export default function EnhancedDashboardPage() {
                 <h2 className="text-lg font-semibold text-gray-900 flex items-center">
                   <MessageCircle className="h-5 w-5 mr-2 text-blue-600" />
                   AI学习助手
-                  {okr && (
-                    <div className="ml-auto flex items-center text-sm text-gray-500">
-                      <BarChart3 className="h-4 w-4 mr-1" />
-                      目标进度: {okr.overall_progress}%
-                    </div>
-                  )}
                 </h2>
               </div>
               
@@ -540,9 +376,9 @@ export default function EnhancedDashboardPage() {
         </div>
       </div>
 
-      {/* Enhanced OKR Form Modal */}
+      {/* OKR Form Modal */}
       {showOkrForm && (
-        <EnhancedOkrFormModal
+        <OkrFormModal
           existingOkr={okr}
           onSave={handleCreateOrUpdateOkr}
           onClose={() => setShowOkrForm(false)}
@@ -552,8 +388,8 @@ export default function EnhancedDashboardPage() {
   )
 }
 
-// Enhanced OKR Form Modal Component
-function EnhancedOkrFormModal({ 
+// OKR Form Modal Component
+function OkrFormModal({ 
   existingOkr, 
   onSave, 
   onClose 
@@ -563,9 +399,7 @@ function EnhancedOkrFormModal({
   onClose: () => void 
 }) {
   const [objective, setObjective] = useState(existingOkr?.objective || '')
-  const [keyResults, setKeyResults] = useState(
-    existingOkr?.key_results.map(kr => kr.text) || ['', '', '']
-  )
+  const [keyResults, setKeyResults] = useState(existingOkr?.key_results || ['', '', ''])
   const [isSaving, setIsSaving] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -575,10 +409,11 @@ function EnhancedOkrFormModal({
       setIsSaving(true)
       try {
         await onSave(objective.trim(), filteredKRs)
+        // 如果成功，onSave会关闭表单，所以这里不需要设置setIsSaving(false)
       } catch (err: any) {
         console.error('保存OKR时发生异常:', err)
         alert('保存失败：' + (err?.message || '未知错误'))
-        setIsSaving(false)
+        setIsSaving(false) // 只在失败时重置状态
       }
     } else {
       alert('目标和至少一个关键结果不能为空。')
@@ -591,20 +426,9 @@ function EnhancedOkrFormModal({
     setKeyResults(newKRs)
   }
 
-  const addKeyResult = () => {
-    setKeyResults([...keyResults, ''])
-  }
-
-  const removeKeyResult = (index: number) => {
-    if (keyResults.length > 1) {
-      const newKRs = keyResults.filter((_, i) => i !== index)
-      setKeyResults(newKRs)
-    }
-  }
-
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg max-w-md w-full p-6 max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-lg max-w-md w-full p-6">
         <h3 className="text-lg font-semibold mb-4">
           {existingOkr ? '编辑学习目标' : '创建学习目标'}
         </h3>
@@ -625,37 +449,18 @@ function EnhancedOkrFormModal({
           </div>
           
           <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-medium text-gray-700">
-                关键结果 (Key Results)
-              </label>
-              <button
-                type="button"
-                onClick={addKeyResult}
-                className="text-blue-600 hover:text-blue-700 text-sm"
-              >
-                + 添加
-              </button>
-            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              关键结果 (Key Results)
+            </label>
             {keyResults.map((kr, index) => (
-              <div key={index} className="flex items-center space-x-2 mb-2">
-                <input
-                  type="text"
-                  value={kr}
-                  onChange={(e) => updateKeyResult(index, e.target.value)}
-                  placeholder={`关键结果 ${index + 1}`}
-                  className="flex-1 border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                {keyResults.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => removeKeyResult(index)}
-                    className="text-red-600 hover:text-red-700"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
+              <input
+                key={index}
+                type="text"
+                value={kr}
+                onChange={(e) => updateKeyResult(index, e.target.value)}
+                placeholder={`关键结果 ${index + 1}`}
+                className="w-full border border-gray-300 rounded-md px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
             ))}
           </div>
           
