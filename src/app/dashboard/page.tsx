@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { Star, Target, MessageCircle, Plus, Send, User, LogOut } from 'lucide-react'
-import { useUser } from '@/contexts/UserContext'
+import { useUser } from '@/contexts/SafeUserContext'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 
@@ -94,44 +94,43 @@ export default function DashboardPage() {
   const handleCreateOrUpdateOkr = async (objective: string, keyResults: string[]) => {
     if (!user) return
 
-    const newOkrData = {
-      objective,
-      key_results: keyResults,
-      user_id: user.id,
-    }
+    try {
+      const newOkrData = {
+        objective,
+        key_results: keyResults,
+        user_id: user.id,
+      }
 
-    let error = null
-    if (okr) {
-      // Update existing OKR
-      const { data: updateData, error: updateError } = await supabase
-        .from('okrs')
-        .update(newOkrData)
-        .eq('id', okr.id)
-        .select() // Select the updated row
-        .single() // Expect a single row
-      error = updateError
-      if (!error) console.log('OKR updated successfully. Data:', updateData)
-    } else {
-      // Create new OKR
-      const { data: insertData, error: insertError } = await supabase
-        .from('okrs')
-        .insert([newOkrData])
-        .select() // Select the inserted row
-        .single() // Expect a single row
-      error = insertError
-      if (!error) console.log('OKR inserted successfully. Data:', insertData)
-    }
+      let result
+      if (okr) {
+        // Update existing OKR
+        result = await supabase
+          .from('okrs')
+          .update(newOkrData)
+          .eq('id', okr.id)
+          .select()
+          .single()
+      } else {
+        // Create new OKR
+        result = await supabase
+          .from('okrs')
+          .insert([newOkrData])
+          .select()
+          .single()
+      }
 
-    if (error) {
-      console.error('Error saving OKR:', error, JSON.stringify(error, null, 2))
-      alert('保存OKR失败，请重试。错误信息：' + error.message)
-    } else {
-      console.log('OKR saved successfully. Re-fetching OKR...')
-      await fetchOkr() // Re-fetch to get the latest data and ID
+      if (result.error) {
+        throw result.error
+      }
+
+      console.log('OKR saved successfully:', result.data)
+      
+      // Re-fetch to get the latest data
+      await fetchOkr()
       setShowOkrForm(false)
-      console.log('OKR form closed.')
+      
       // Add a system message to chat history
-      const systemMessageContent = `你已成功${okr ? '更新' : '创建'}了新的学习目标！\n\n目标：${objective}\n\n关键结果：\n${keyResults.map((kr, i) => `${i+1}. ${kr}`).join('\\n')}\n\n你可以问我"今天要做什么"，我会根据你的目标推荐任务。`
+      const systemMessageContent = `你已成功${okr ? '更新' : '创建'}了新的学习目标！\n\n目标：${objective}\n\n关键结果：\n${keyResults.map((kr, i) => `${i+1}. ${kr}`).join('\n')}\n\n你可以问我"今天要做什么"，我会根据你的目标推荐任务。`
       const systemMessage: ChatMessage = {
         id: Date.now().toString(),
         role: 'assistant',
@@ -139,9 +138,17 @@ export default function DashboardPage() {
         created_at: new Date().toISOString()
       }
       setChatMessages(prev => [...prev, systemMessage])
-      console.log('Adding system message to chat history in DB...')
-      await supabase.from('chat_history').insert([{ user_id: user.id, message: { role: 'assistant', content: systemMessageContent } }])
-      console.log('System message added to DB.')
+      
+      // Save system message to DB
+      await supabase.from('chat_history').insert([{ 
+        user_id: user.id, 
+        message: { role: 'assistant', content: systemMessageContent } 
+      }])
+      
+    } catch (error: any) {
+      console.error('Error saving OKR:', error)
+      alert('保存OKR失败，请重试。错误信息：' + (error?.message || '未知错误'))
+      throw error // Re-throw to be caught by the form's error handler
     }
   }
 
@@ -399,14 +406,14 @@ function OkrFormModal({
     e.preventDefault()
     const filteredKRs = keyResults.filter(kr => kr.trim() !== '')
     if (objective.trim() && filteredKRs.length > 0) {
+      setIsSaving(true)
       try {
-        setIsSaving(true)
         await onSave(objective.trim(), filteredKRs)
+        // 如果成功，onSave会关闭表单，所以这里不需要设置setIsSaving(false)
       } catch (err: any) {
         console.error('保存OKR时发生异常:', err)
         alert('保存失败：' + (err?.message || '未知错误'))
-      } finally {
-        setIsSaving(false)
+        setIsSaving(false) // 只在失败时重置状态
       }
     } else {
       alert('目标和至少一个关键结果不能为空。')

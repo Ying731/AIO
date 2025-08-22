@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { Star, Mail, Lock, Eye, EyeOff } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useUser } from '@/contexts/UserContext'
+import { useUser } from '@/contexts/SafeUserContext'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')

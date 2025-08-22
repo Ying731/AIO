@@ -1,15 +1,21 @@
 import { NextResponse } from 'next/server'
-import OpenAI from 'openai'
-import { supabase } from '@/lib/supabase'
-
-// 初始化OpenAI客户端
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-})
+import { GoogleGenerativeAI } from '@google/generative-ai'
 
 export async function POST(req: Request) {
   try {
+    console.log('Chat API called')
+    
+    // 检查API Key
+    const apiKey = process.env.GOOGLE_AI_API_KEY
+    console.log('API Key exists:', !!apiKey)
+    
+    if (!apiKey) {
+      console.error('GOOGLE_AI_API_KEY not found')
+      return NextResponse.json({ error: 'API Key not configured' }, { status: 500 })
+    }
+
     const { message, okr } = await req.json()
+    console.log('Received message:', message)
 
     if (!message) {
       return NextResponse.json({ error: 'Message is required' }, { status: 400 })
@@ -21,51 +27,61 @@ export async function POST(req: Request) {
     // 检查是否是询问每日任务
     if (message.includes('今天') && (message.includes('做什么') || message.includes('任务'))) {
       if (okr && okr.objective && okr.keyResults && okr.keyResults.length > 0) {
-        const krList = okr.keyResults.map((kr: string, index: number) => `${index + 1}. ${kr}`).join('\\n')
-        prompt = `用户设定了以下学习目标(OKR)：\\n目标：${okr.objective}\\n关键结果：\\n${krList}\\n\\n请根据这个OKR，为用户推荐3-5个今日可执行的学习任务。请直接列出任务，不需要寒暄。`
+        const krList = okr.keyResults.map((kr: string, index: number) => `${index + 1}. ${kr}`).join('\n')
+        prompt = `用户设定了以下学习目标(OKR)：\n目标：${okr.objective}\n关键结果：\n${krList}\n\n请根据这个OKR，为用户推荐3-5个今日可执行的学习任务。请直接列出任务，不需要寒暄。`
       } else {
         aiResponse = '你还没有设置学习目标(OKR)。建议你先创建一个目标，这样我就能为你提供更个性化的学习建议了！'
       }
     } else {
-      // 否则，进行知识库问答 (RAG)
-      // 1. 获取用户消息的嵌入
-      const embeddingResponse = await openai.embeddings.create({
-        model: 'text-embedding-ada-002',
-        input: message,
-      })
-      const userEmbedding = embeddingResponse.data[0].embedding
-
-      // 2. 在Supabase中搜索相似的知识块
-      const { data: knowledgeChunks, error: searchError } = await supabase.rpc('match_documents', {
-        query_embedding: userEmbedding,
-        match_threshold: 0.78, // 相似度阈值，可调
-        match_count: 5, // 返回最相似的5个知识块
-      })
-
-      if (searchError) {
-        console.error('Error searching knowledge chunks:', searchError)
-        aiResponse = '抱歉，在知识库中查找信息时出现问题。'
-      } else {
-        const context = knowledgeChunks.map((chunk: any) => chunk.content).join('\\n\\n')
-        
-        prompt = `你是一个专业的AI学习助手，请根据以下提供的知识内容来回答用户的问题。如果知识内容中没有直接的答案，请礼貌地告知用户你无法回答，并建议他们查阅相关资料或向老师请教。\\n\\n知识内容：\\n${context}\\n\\n用户问题：${message}\\n\\n回答：`
-      }
+      // 通用AI助手对话
+      prompt = `你是一个专业的AI学习助手，请回答用户的问题。如果用户询问学习相关的问题，请提供有用的建议和指导。\n\n用户问题：${message}\n\n请用中文回答：`
     }
 
     if (prompt) {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo', // 可以根据需要选择更强大的模型，如 gpt-4
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
-        max_tokens: 500,
-      })
-      aiResponse = completion.choices[0].message.content || '抱歉，我暂时无法回答这个问题。'
+      try {
+        console.log('Initializing Google AI...')
+        const genAI = new GoogleGenerativeAI(apiKey)
+        
+        console.log('Getting model...')
+        const model = genAI.getGenerativeModel({ model: 'gemini-pro' })
+        
+        console.log('Generating content...')
+        const result = await model.generateContent(prompt)
+        
+        console.log('Getting response...')
+        const response = await result.response
+        
+        console.log('Extracting text...')
+        aiResponse = response.text()
+        
+        console.log('AI response received successfully')
+      } catch (aiError: any) {
+        console.error('Google AI Error:', aiError)
+        console.error('Error message:', aiError.message)
+        console.error('Error status:', aiError.status)
+        console.error('Error details:', JSON.stringify(aiError, null, 2))
+        
+        // 提供更详细的错误信息
+        if (aiError.message?.includes('API_KEY_INVALID')) {
+          aiResponse = '抱歉，API密钥无效。请检查配置。'
+        } else if (aiError.message?.includes('QUOTA_EXCEEDED')) {
+          aiResponse = '抱歉，API配额已用完。请稍后再试。'
+        } else if (aiError.message?.includes('SAFETY')) {
+          aiResponse = '抱歉，您的问题触发了安全过滤器。请换个方式提问。'
+        } else {
+          aiResponse = `抱歉，AI服务暂时不可用。错误：${aiError.message || '未知错误'}`
+        }
+      }
     }
 
+    console.log('Sending response:', aiResponse.substring(0, 100) + '...')
     return NextResponse.json({ response: aiResponse })
 
-  } catch (error) {
-    console.error('Error in AI chat API:', error)
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 })
+  } catch (error: any) {
+    console.error('General Error:', error)
+    return NextResponse.json({ 
+      error: 'Internal Server Error', 
+      details: error.message 
+    }, { status: 500 })
   }
 }

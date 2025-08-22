@@ -55,17 +55,38 @@ export function UserProvider({ children }: { children: ReactNode }) {
       async (event, session) => {
         if (session) {
           // 获取用户详细信息
-          const { data: profile } = await supabase
+          const { data: profile, error: profileError } = await supabase
             .from('profiles')
             .select('name')
             .eq('id', session.user.id)
             .single()
 
-          setUser({
-            id: session.user.id,
-            email: session.user.email!,
-            name: profile?.name || null
-          })
+          // 如果profiles表中没有记录，且用户已确认邮箱，则创建记录
+          if (profileError && profileError.code === 'PGRST116' && session.user.email_confirmed_at) {
+            const { data: newProfile } = await supabase
+              .from('profiles')
+              .insert([
+                { 
+                  id: session.user.id, 
+                  email: session.user.email!,
+                  name: session.user.user_metadata?.name || null
+                }
+              ])
+              .select('name')
+              .single()
+
+            setUser({
+              id: session.user.id,
+              email: session.user.email!,
+              name: newProfile?.name || session.user.user_metadata?.name || null
+            })
+          } else {
+            setUser({
+              id: session.user.id,
+              email: session.user.email!,
+              name: profile?.name || null
+            })
+          }
         } else {
           setUser(null)
         }
@@ -84,13 +105,32 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }
 
   const signUp = async (email: string, password: string, name: string) => {
-    const { error, data } = await supabase.auth.signUp({ email, password })
+    const { error, data } = await supabase.auth.signUp({ 
+      email, 
+      password,
+      options: {
+        data: {
+          name: name
+        }
+      }
+    })
     
     if (!error && data.user) {
-      // 创建用户资料
-      await supabase.from('profiles').insert([
-        { id: data.user.id, name, email }
-      ])
+      // 立即插入用户信息到 profiles 表
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .insert([
+          { 
+            id: data.user.id, 
+            email: data.user.email!,
+            name: name
+          }
+        ])
+      
+      if (profileError) {
+        console.error('Error inserting profile:', profileError)
+        return { error: profileError }
+      }
     }
     
     return { error }
